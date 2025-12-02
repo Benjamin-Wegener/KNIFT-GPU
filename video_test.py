@@ -51,6 +51,10 @@ class KNIFTVideoObjectMatcher:
         self.last_frame_features = None  # Cache last frame
         self.frame_cache_id = -1
 
+        # Store last detected bounding boxes for persistence
+        self.sample1_last_bbox = None
+        self.sample2_last_bbox = None
+
         # Keypoint visualization
         self.show_keypoints_var = tk.BooleanVar(value=True)  # Default to showing keypoints
 
@@ -1101,6 +1105,7 @@ class KNIFTVideoObjectMatcher:
             return ""
 
         # Sample 1
+        sample1_has_new_match = False
         if self.sample1_img is not None and self.sample1_keypoints is not None:
             matches1 = self.match_descriptors(frame_desc, self.sample1_descriptors)
 
@@ -1114,17 +1119,29 @@ class KNIFTVideoObjectMatcher:
 
                     if verified_score1 > 0.10:  # Lower threshold
                         results.append(f"Sample1: {verified_score1:.1%}")
+                        sample1_has_new_match = True
 
                         if self.show_matches_var.get():
                             bbox1 = self.calculate_match_bounding_box(frame_kp, verified_matches1, processed_frame.shape)
                             # Scale bounding box from processed frame coordinates to original frame coordinates
                             scaled_bbox1 = self.scale_bounding_box(bbox1, processed_frame.shape, vis_frame.shape)
+                            # Store the new bounding box
+                            self.sample1_last_bbox = scaled_bbox1
                             vis_frame = self.draw_match_visualization_colored(
                                 vis_frame, "Sample 1", verified_score1, scaled_bbox1, verified_matches1,
                                 color=(0, 255, 0)
                             )
 
+        # If no new match found for sample 1, show the last known bounding box
+        if not sample1_has_new_match and self.sample1_last_bbox is not None and self.show_matches_var.get():
+            # Use the last known bounding box
+            vis_frame = self.draw_match_visualization_colored(
+                vis_frame, "Sample 1", 0.0, self.sample1_last_bbox, [],
+                color=(0, 200, 0)  # Slightly different color to indicate persistence
+            )
+
         # Sample 2
+        sample2_has_new_match = False
         if self.sample2_img is not None and self.sample2_keypoints is not None:
             matches2 = self.match_descriptors(frame_desc, self.sample2_descriptors)
 
@@ -1138,15 +1155,26 @@ class KNIFTVideoObjectMatcher:
 
                     if verified_score2 > 0.10:
                         results.append(f"Sample2: {verified_score2:.1%}")
+                        sample2_has_new_match = True
 
                         if self.show_matches_var.get():
                             bbox2 = self.calculate_match_bounding_box(frame_kp, verified_matches2, processed_frame.shape)
                             # Scale bounding box from processed frame coordinates to original frame coordinates
                             scaled_bbox2 = self.scale_bounding_box(bbox2, processed_frame.shape, vis_frame.shape)
+                            # Store the new bounding box
+                            self.sample2_last_bbox = scaled_bbox2
                             vis_frame = self.draw_match_visualization_colored(
                                 vis_frame, "Sample 2", verified_score2, scaled_bbox2, verified_matches2,
                                 color=(255, 0, 0)
                             )
+
+        # If no new match found for sample 2, show the last known bounding box
+        if not sample2_has_new_match and self.sample2_last_bbox is not None and self.show_matches_var.get():
+            # Use the last known bounding box
+            vis_frame = self.draw_match_visualization_colored(
+                vis_frame, "Sample 2", 0.0, self.sample2_last_bbox, [],
+                color=(200, 0, 0)  # Slightly different color to indicate persistence
+            )
 
         # Keypoints visualization (optional)
         if self.show_keypoints_var.get():
