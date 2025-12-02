@@ -205,3 +205,25 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# KNIFT-GPU specific ignores
+*.h5
+*.weights
+*.tflite
+*.pb
+*.onnx
+*.pth
+*.pt
+*.ckpt
+*.pkl
+*.pickle
+
+# Training outputs (in case they get recreated)
+outputs/
+checkpoints/
+logs/
+*.log
+
+# Data augmentation outputs
+*_augmented.*
+*_transformed.*
