@@ -1,5 +1,7 @@
 # KNIFT-GPU: Mobile-Optimized Feature Descriptor
 
+![Preview](preview.gif)
+
 GPU-compatible reimplementation of MediaPipe's KNIFT (Keypoint Neural Invariant Feature Transform) feature descriptor, designed for efficient on-device inference with TensorFlow Lite GPU delegates.
 
 ## Overview
