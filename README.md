@@ -18,6 +18,7 @@ This project rebuilds the KNIFT feature descriptor from scratch to eliminate GPU
 | **Architecture** | Inception-style CNN | Inception-style CNN (same) |
 | **Output** | 40-dim embeddings | 40-dim embeddings |
 | **L2 Normalization** | ✅ Yes (in model) | ❌ No (deferred to matching) |
+| **Batch Normalization** | ✅ Yes (separate layers) | 🔧 Fused (into Conv2D) |
 | **Reshape Operations** | Dynamic (-1 dims) | Fixed dimensions only |
 | **GPU Delegate** | ❌ Falls back to CPU | ✅ Full GPU support |
 | **Training Data** | Proprietary | Custom dataset (20 images) |
@@ -28,8 +29,8 @@ This project rebuilds the KNIFT feature descriptor from scratch to eliminate GPU
 Lightweight Inception-based CNN (~100K parameters):
 - **Input**: 32×32 grayscale patches
 - **Output**: 40-dimensional float32 embeddings (unnormalized)
-- **Operations**: CONV_2D, MAX_POOL_2D, AVERAGE_POOL_2D, CONCATENATION, BATCH_NORM, DENSE, RELU
-- **GPU Compatible**: All operations supported by TFLite GPU delegate
+- **Operations**: CONV_2D, MAX_POOL_2D, AVERAGE_POOL_2D, CONCATENATION, DENSE, RELU
+- **GPU Compatible**: All operations supported by TFLite GPU delegate (BatchNorm fused into Conv2D during inference)
 
 ## Features
 
@@ -37,7 +38,7 @@ Lightweight Inception-based CNN (~100K parameters):
 - Alignment task visualization during training
 - Automatic model checkpointing
 - Final TFLite export with batch sizes optimized for mobile GPU inference
-- GPU-compatible architecture (no L2 normalization, fixed shapes only)
+- GPU-compatible architecture (no L2 normalization, no BatchNorm operations, fixed shapes only)
 - Batch-hard triplet loss with in-batch semi-hard negative mining
 - Multi-scale alignment testing suite
 
@@ -75,14 +76,18 @@ python align_test.py
 
 - Training images: Set14 (13 images excluding baboon)
 - Validation image: baboon.jpeg from Set14
-- Epochs: 250
-- Batch size: 32
+- Epochs: 500
+- Batch size: 64
 - Steps per epoch: 20
-- Total patches: ~480k
+- Total patches: ~1.92M
 
 ## Model Export
 
-The trained model is exported to TensorFlow Lite format with multiple batch sizes:
-- `knift_gpu_float.tflite` (batch size 200)
-- `knift_gpu_float_400.tflite` (batch size 400)
-- `knift_gpu_float_1k.tflite` (batch size 1000)
+The trained model undergoes automatic BatchNorm fusion after training to optimize inference performance for mobile GPU execution, then is exported to TensorFlow Lite format with multiple batch sizes:
+
+**Fused models (BatchNorm fused into Conv2D layers for optimal GPU performance):**
+- `knift_gpu_fused_float.tflite` (batch size 200)
+- `knift_gpu_fused_float_400.tflite` (batch size 400)
+- `knift_gpu_fused_float_1k.tflite` (batch size 1000)
+
+The fused models provide superior inference performance for mobile GPUs by eliminating BatchNorm operations during inference while maintaining equivalent functionality to the original architecture.

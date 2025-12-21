@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
 
-"""
-KNIFT Video Object Matcher (240p version)
-This application matches sample images (sample1.jpg and sample2.jpg)
-to objects in sample.mp4 using the KNIFT model with 240p downsampling for detection.
-"""
-
 import tkinter as tk
 from tkinter import ttk, messagebox
 import cv2
@@ -21,7 +15,6 @@ class KNIFTVideoObjectMatcher:
         self.root.title("KNIFT Video Object Matcher (240p)")
         self.root.geometry("1200x800")
 
-        # Initialize variables
         self.video_cap = None
         self.current_frame = None
         self.sample1_img = None
@@ -32,31 +25,24 @@ class KNIFTVideoObjectMatcher:
         self.total_frames = 0
         self.match_results = []
 
-        # Frame skipping for performance
-        self.frame_skip = 2  # Process every 2nd frame
+        self.frame_skip = 2
         self.frame_counter = 0
 
-        # Store keypoints and descriptors
         self.sample1_keypoints = None
         self.sample1_descriptors = None
         self.sample2_keypoints = None
         self.sample2_descriptors = None
-        # Store downscaled sample images for matching
         self.downscaled_sample1 = None
         self.downscaled_sample2 = None
-        # Store match positions and keypoints for visualization
         self.match_positions = []
         self.current_frame_keypoints = None
-        # Cache frame features for speed optimization
-        self.last_frame_features = None  # Cache last frame
+        self.last_frame_features = None
         self.frame_cache_id = -1
 
-        # Store last detected bounding boxes for persistence
         self.sample1_last_bbox = None
         self.sample2_last_bbox = None
 
-        # Keypoint visualization
-        self.show_keypoints_var = tk.BooleanVar(value=True)  # Default to showing keypoints
+        self.show_keypoints_var = tk.BooleanVar(value=True)
 
         # Load images and video
         self.load_resources()
@@ -217,7 +203,6 @@ class KNIFTVideoObjectMatcher:
             else:
                 self.display_image(self.sample1_img, self.sample1_label)
         if self.sample2_img is not None:
-            # Display sample image with keypoints if keypoints are available and visualization is enabled
             if self.show_keypoints_var.get() and self.sample2_keypoints is not None:
                 img_with_kp = self.draw_keypoints(self.sample2_img, self.sample2_keypoints)
                 self.display_image(img_with_kp, self.sample2_label)
@@ -225,16 +210,14 @@ class KNIFTVideoObjectMatcher:
                 self.display_image(self.sample2_img, self.sample2_label)
 
     def load_knift_model(self):
-        """Load the KNIFT model using the same approach as align_test.py"""
         model_paths = [
-            "./outputs/models/knift_gpu_float.tflite"
+            "./outputs/models/knift_gpu_fused_float.tflite"
         ]
 
         model_loaded = False
         for model_path in model_paths:
             if os.path.exists(model_path):
                 try:
-                    # Try XNNPACK delegate for CPU optimization
                     self.interpreter = tf.lite.Interpreter(
                         model_path=model_path,
                         num_threads=4
@@ -254,7 +237,6 @@ class KNIFTVideoObjectMatcher:
             messagebox.showwarning("Model Warning", "Could not load KNIFT model. Matching functionality may be limited.")
 
     def extract_patches(self, img, grid_points, patch_size=32):
-        """Extract patches around grid points - handles NORMALIZED coordinates (0..1)"""
         patches = []
         valid_indices = []
 
@@ -908,9 +890,9 @@ class KNIFTVideoObjectMatcher:
 
         return (scaled_x_min, scaled_y_min, scaled_x_max, scaled_y_max)
 
-    def verify_matches_with_ransac(self, sample_kp, frame_kp, matches, frame_shape, threshold=10.0):
+    def verify_matches_with_ransac(self, sample_kp, frame_kp, matches, frame_shape, threshold=15.0):
         """Use RANSAC to filter geometrically inconsistent matches"""
-        if len(matches) < 8:  # Reduced minimum
+        if len(matches) < 4:  # Lowered minimum to allow more potential matches
             return [], None
 
         h, w = frame_shape[:2]
@@ -922,7 +904,7 @@ class KNIFTVideoObjectMatcher:
             if frame_idx < len(frame_kp) and sample_idx < len(sample_kp):
                 valid_matches.append((frame_idx, sample_idx))
 
-        if len(valid_matches) < 8:  # Not enough valid matches for RANSAC
+        if len(valid_matches) < 4:  # Not enough valid matches for RANSAC
             return [], None
 
         # Denormalize keypoints to pixel coordinates
@@ -930,7 +912,7 @@ class KNIFTVideoObjectMatcher:
         src_pts = np.float32([[sample_kp[m[1]][0] * w, sample_kp[m[1]][1] * h] for m in valid_matches])
         dst_pts = np.float32([[frame_kp[m[0]][0] * w, frame_kp[m[0]][1] * h] for m in valid_matches])
 
-        # Find homography with RANSAC (relaxed threshold for 240p)
+        # Find homography with RANSAC (increased threshold for more tolerance to noise)
         H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, threshold)
 
         if H is None:
@@ -940,14 +922,179 @@ class KNIFTVideoObjectMatcher:
         inlier_matches = [valid_matches[i] for i in range(len(valid_matches)) if mask[i]]
         inlier_ratio = len(inlier_matches) / len(valid_matches) if len(valid_matches) > 0 else 0
 
-        # Relaxed criteria: 40% inliers OR 12+ inliers
-        is_valid = (inlier_ratio > 0.4 and len(inlier_matches) >= 6) or len(inlier_matches) >= 12
+        # Relaxed criteria: 30% inliers AND 4+ inliers (more permissive)
+        is_valid = (inlier_ratio > 0.30 and len(inlier_matches) >= 4)
 
         # Don't print every frame - only when match found
         if is_valid:
             print(f"  ✓ RANSAC: {len(matches)} → {len(inlier_matches)} inliers ({inlier_ratio:.1%})")
+        else:
+            # Also log when RANSAC fails for debugging
+            if len(matches) >= 4:
+                print(f"  ✗ RANSAC: {len(matches)} → {len(inlier_matches)} inliers ({inlier_ratio:.1%}) [FAILED]")
 
         return inlier_matches if is_valid else [], H if is_valid else None
+
+    def combine_multi_view_matches(self, sample1_kp, sample2_kp, frame_kp, matches1, matches2, frame_shape):
+        """
+        Combine matches from front view (sample1) and side view (sample2) to improve detection accuracy.
+
+        This function looks for spatial consistency between matches from both views to increase confidence
+        in object detection. If both views consistently detect the same object region, the confidence
+        is increased.
+        """
+        # Handle None keypoints arrays by creating empty arrays with proper shape
+        if sample1_kp is None:
+            sample1_kp = np.array([]).reshape(0, 2)
+        if sample2_kp is None:
+            sample2_kp = np.array([]).reshape(0, 2)
+
+        if len(matches1) == 0 and len(matches2) == 0:
+            return [], None, 0.0
+
+        h, w = frame_shape[:2]
+
+        # Convert matches to pixel coordinates in the frame
+        matched_points1 = []
+        valid_matches1 = []
+        if len(matches1) > 0:
+            # Validate matches before creating point arrays
+            for frame_idx, sample_idx in matches1:
+                if frame_idx < len(frame_kp) and sample_idx < len(sample1_kp):
+                    valid_matches1.append((frame_idx, sample_idx))
+
+            if len(valid_matches1) > 0:
+                matched_points1 = np.float32([[frame_kp[m[0]][0] * w, frame_kp[m[0]][1] * h] for m in valid_matches1])
+
+        matched_points2 = []
+        valid_matches2 = []
+        if len(matches2) > 0:
+            # Validate matches before creating point arrays
+            for frame_idx, sample_idx in matches2:
+                if frame_idx < len(frame_kp) and sample_idx < len(sample2_kp):
+                    valid_matches2.append((frame_idx, sample_idx))
+
+            if len(valid_matches2) > 0:
+                matched_points2 = np.float32([[frame_kp[m[0]][0] * w, frame_kp[m[0]][1] * h] for m in valid_matches2])
+
+        # Calculate centroids of matched points for each sample
+        centroid1 = None
+        if len(matched_points1) > 0:
+            centroid1 = np.mean(matched_points1, axis=0)
+
+        centroid2 = None
+        if len(matched_points2) > 0:
+            centroid2 = np.mean(matched_points2, axis=0)
+
+        # Determine if centroids are close enough to suggest the same object
+        combined_matches = []
+        combined_score = 0.0
+
+        # Enhanced multi-view geometric consistency check with strong single-view fallback
+        if len(valid_matches1) > 0 and len(valid_matches2) > 0:
+            # Both samples have matches - check for spatial consistency
+            # Calculate distance between centroids
+            centroid_dist = np.linalg.norm(centroid1 - centroid2)
+            max_acceptable_dist = min(w, h) * 0.3  # Loosened: 30% of frame dimension to allow more variation
+
+            # Calculate individual scores for comparison
+            score1 = len(valid_matches1) / min(len(sample1_kp), 100) if len(sample1_kp) > 0 else 0
+            score2 = len(valid_matches2) / min(len(sample2_kp), 100) if len(sample2_kp) > 0 else 0
+
+            if centroid_dist <= max_acceptable_dist:
+                # Both views agree on object location - HIGH confidence
+                combined_matches = valid_matches1 + valid_matches2
+                # Strong boost when both views agree geometrically
+                combined_score = min(1.0, (score1 + score2) * 2.0)  # Double the score for multi-view agreement
+            else:
+                # Centroids too far apart - check if either view has strong individual confidence
+                # Allow detection if either view has high confidence even if they don't agree geometrically
+                max_individual_score = max(score1, score2)
+                if max_individual_score > 0.15:  # Lowered threshold for strong individual confidence
+                    # Use the view with higher confidence
+                    if score1 >= score2:
+                        combined_matches = valid_matches1
+                        combined_score = score1  # Use original score without penalty
+                    else:
+                        combined_matches = valid_matches2
+                        combined_score = score2  # Use original score without penalty
+                else:
+                    # Neither view has strong confidence, and they disagree geometrically
+                    combined_matches = valid_matches1 if score1 >= score2 else valid_matches2
+                    combined_score = max(score1, score2) * 0.7  # Reduce confidence when views disagree
+        elif len(valid_matches1) > 0:
+            # Only sample1 has matches - check if it has strong confidence
+            score1 = len(valid_matches1) / min(len(sample1_kp), 100) if len(sample1_kp) > 0 else 0
+            combined_matches = valid_matches1
+            # Require higher confidence for single-view detection to reduce false positives
+            combined_score = score1 if score1 > 0.25 else score1 * 0.1  # Much lower score if not strong (10%)
+        elif len(valid_matches2) > 0:
+            # Only sample2 has matches - check if it has strong confidence
+            score2 = len(valid_matches2) / min(len(sample2_kp), 100) if len(sample2_kp) > 0 else 0
+            combined_matches = valid_matches2
+            # Require higher confidence for single-view detection to reduce false positives
+            combined_score = score2 if score2 > 0.25 else score2 * 0.1  # Much lower score if not strong (10%)
+
+        # Calculate a combined bounding box if we have matches (minimum 4 to ensure geometric validity)
+        bbox = None
+        if len(combined_matches) >= 4:
+            all_matched_keypoints = []
+            for frame_idx, _ in combined_matches:
+                if frame_idx < len(frame_kp):
+                    all_matched_keypoints.append([frame_kp[frame_idx][0] * w, frame_kp[frame_idx][1] * h])
+
+            if len(all_matched_keypoints) >= 4:
+                all_matched_keypoints = np.array(all_matched_keypoints)
+
+                # Use more robust bounding box calculation with outlier rejection
+                x_coords = all_matched_keypoints[:, 0]
+                y_coords = all_matched_keypoints[:, 1]
+
+                # Calculate medians and MAD for outlier rejection
+                x_median = np.median(x_coords)
+                y_median = np.median(y_coords)
+                x_mad = np.median(np.abs(x_coords - x_median))
+                y_mad = np.median(np.abs(y_coords - y_median))
+
+                # Filter out outliers (points more than 2 MADs from median)
+                x_filtered = x_coords[np.abs(x_coords - x_median) < 2 * x_mad]
+                y_filtered = y_coords[np.abs(y_coords - y_median) < 2 * y_mad]
+
+                # If too many points were filtered out, use all points
+                if len(x_filtered) < 4 or len(y_filtered) < 4:
+                    x_filtered = x_coords
+                    y_filtered = y_coords
+
+                x_min, x_max = x_filtered.min(), x_filtered.max()
+                y_min, y_max = y_filtered.min(), y_filtered.max()
+
+                # Add minimal padding
+                padding = 8
+                x_min = max(0, int(x_min - padding))
+                y_min = max(0, int(y_min - padding))
+                x_max = min(w, int(x_max + padding))
+                y_max = min(h, int(y_max + padding))
+
+                # Ensure minimum box size to prevent tiny false positive boxes
+                min_box_size = 20
+                if x_max - x_min < min_box_size:
+                    center_x = (x_min + x_max) / 2
+                    half_size = min_box_size / 2
+                    x_min = max(0, int(center_x - half_size))
+                    x_max = min(w, int(center_x + half_size))
+
+                if y_max - y_min < min_box_size:
+                    center_y = (y_min + y_max) / 2
+                    half_size = min_box_size / 2
+                    y_min = max(0, int(center_y - half_size))
+                    y_max = min(h, int(center_y + half_size))
+
+                bbox = (x_min, y_min, x_max, y_max)
+        else:
+            # Not enough matches for a valid bounding box
+            bbox = None
+
+        return combined_matches, bbox, combined_score
 
     def start_matching(self):
         """Start the video matching process"""
@@ -1101,84 +1248,92 @@ class KNIFTVideoObjectMatcher:
         frame_kp, frame_desc = self.last_frame_features
 
         if frame_kp is None or frame_desc is None:
+            print(f"  ! Frame {self.current_frame_number}: No features extracted from frame")
             self.display_image(vis_frame, self.video_label)
             return ""
 
-        # Sample 1
-        sample1_has_new_match = False
-        if self.sample1_img is not None and self.sample1_keypoints is not None:
-            matches1 = self.match_descriptors(frame_desc, self.sample1_descriptors)
+        # Add logging for keypoint count
+        if len(frame_kp) < 10:
+            print(f"  ! Frame {self.current_frame_number}: Low keypoints count ({len(frame_kp)}) in frame")
 
+        # Extract matches for both samples
+        matches1, matches2 = [], []
+        has_match1, has_match2 = False, False
+
+        # Sample 1
+        if self.sample1_img is not None and self.sample1_keypoints is not None and self.sample1_descriptors is not None:
+            matches1 = self.match_descriptors(frame_desc, self.sample1_descriptors)
             if len(matches1) > 0:
                 verified_matches1, H1 = self.verify_matches_with_ransac(
                     self.sample1_keypoints, frame_kp, matches1, processed_frame.shape, threshold=10.0
                 )
-
-                if len(verified_matches1) > 0:
-                    verified_score1 = len(verified_matches1) / min(len(self.sample1_descriptors), 100)
-
-                    if verified_score1 > 0.10:  # Lower threshold
-                        results.append(f"Sample1: {verified_score1:.1%}")
-                        sample1_has_new_match = True
-
-                        if self.show_matches_var.get():
-                            bbox1 = self.calculate_match_bounding_box(frame_kp, verified_matches1, processed_frame.shape)
-                            # Scale bounding box from processed frame coordinates to original frame coordinates
-                            scaled_bbox1 = self.scale_bounding_box(bbox1, processed_frame.shape, vis_frame.shape)
-                            # Store the new bounding box
-                            self.sample1_last_bbox = scaled_bbox1
-                            vis_frame = self.draw_match_visualization_colored(
-                                vis_frame, "Sample 1", verified_score1, scaled_bbox1, verified_matches1,
-                                color=(0, 255, 0)
-                            )
-
-        # If no new match found for sample 1, show the last known bounding box
-        if not sample1_has_new_match and self.sample1_last_bbox is not None and self.show_matches_var.get():
-            # Use the last known bounding box
-            vis_frame = self.draw_match_visualization_colored(
-                vis_frame, "Sample 1", 0.0, self.sample1_last_bbox, [],
-                color=(0, 200, 0)  # Slightly different color to indicate persistence
-            )
+                matches1 = verified_matches1  # Update with verified matches
+                has_match1 = len(verified_matches1) > 0
+            # Log match count for sample 1
+            if len(self.sample1_keypoints) > 0:
+                print(f"  * Frame {self.current_frame_number}: Sample1 - {len(self.sample1_keypoints)} keypoints, {len(matches1)} matches")
+        else:
+            print(f"  ! Frame {self.current_frame_number}: Sample1 not available for matching")
 
         # Sample 2
-        sample2_has_new_match = False
-        if self.sample2_img is not None and self.sample2_keypoints is not None:
+        if self.sample2_img is not None and self.sample2_keypoints is not None and self.sample2_descriptors is not None:
             matches2 = self.match_descriptors(frame_desc, self.sample2_descriptors)
-
             if len(matches2) > 0:
                 verified_matches2, H2 = self.verify_matches_with_ransac(
                     self.sample2_keypoints, frame_kp, matches2, processed_frame.shape, threshold=10.0
                 )
+                matches2 = verified_matches2  # Update with verified matches
+                has_match2 = len(verified_matches2) > 0
+            # Log match count for sample 2
+            if len(self.sample2_keypoints) > 0:
+                print(f"  * Frame {self.current_frame_number}: Sample2 - {len(self.sample2_keypoints)} keypoints, {len(matches2)} matches")
+        else:
+            print(f"  ! Frame {self.current_frame_number}: Sample2 not available for matching")
 
-                if len(verified_matches2) > 0:
-                    verified_score2 = len(verified_matches2) / min(len(self.sample2_descriptors), 100)
+        # Use the new combined matching approach
+        combined_matches, combined_bbox, combined_score = self.combine_multi_view_matches(
+            self.sample1_keypoints if self.sample1_keypoints is not None else np.array([]).reshape(0, 2),
+            self.sample2_keypoints if self.sample2_keypoints is not None else np.array([]).reshape(0, 2),
+            frame_kp, matches1, matches2, processed_frame.shape
+        )
 
-                    if verified_score2 > 0.10:
-                        results.append(f"Sample2: {verified_score2:.1%}")
-                        sample2_has_new_match = True
+        # Determine visualization approach based on combined view results only
+        # Balance between allowing legitimate detections while reducing false positives
+        if combined_score > 0.12 and len(combined_matches) >= 4:  # Increased from 0.04 to eliminate low confidence false positives
+            # Only show combined detection (both or either view contributes)
+            results.append(f"Object (Combined): {combined_score:.1%}")
 
-                        if self.show_matches_var.get():
-                            bbox2 = self.calculate_match_bounding_box(frame_kp, verified_matches2, processed_frame.shape)
-                            # Scale bounding box from processed frame coordinates to original frame coordinates
-                            scaled_bbox2 = self.scale_bounding_box(bbox2, processed_frame.shape, vis_frame.shape)
-                            # Store the new bounding box
-                            self.sample2_last_bbox = scaled_bbox2
-                            vis_frame = self.draw_match_visualization_colored(
-                                vis_frame, "Sample 2", verified_score2, scaled_bbox2, verified_matches2,
-                                color=(255, 0, 0)
-                            )
+            if self.show_matches_var.get() and combined_bbox is not None:
+                # Scale bounding box from processed frame coordinates to original frame coordinates
+                scaled_bbox = self.scale_bounding_box(combined_bbox, processed_frame.shape, vis_frame.shape)
 
-        # If no new match found for sample 2, show the last known bounding box
-        if not sample2_has_new_match and self.sample2_last_bbox is not None and self.show_matches_var.get():
-            # Use the last known bounding box
-            vis_frame = self.draw_match_visualization_colored(
-                vis_frame, "Sample 2", 0.0, self.sample2_last_bbox, [],
-                color=(200, 0, 0)  # Slightly different color to indicate persistence
-            )
+                # Use a special color (purple) to indicate combined detection
+                vis_frame = self.draw_match_visualization_colored(
+                    vis_frame, "Object (Combined)", combined_score, scaled_bbox, combined_matches,
+                    color=(255, 0, 255)  # Purple indicates combined view detection
+                )
+        else:
+            # Add debug logging for frames that had matches but didn't meet threshold
+            if combined_score > 0 and len(combined_matches) >= 2:
+                print(f"  ~ Frame {self.current_frame_number}: {len(combined_matches)} matches, score={combined_score:.3f} (below threshold)")
+                # Log individual scores if available
+                if self.sample1_keypoints is not None and self.sample2_keypoints is not None:
+                    if len(matches1) > 0:
+                        score1 = len(matches1) / min(len(self.sample1_keypoints), 100)
+                        print(f"    Sample1 matches: {len(matches1)}, score: {score1:.3f}")
+                    if len(matches2) > 0:
+                        score2 = len(matches2) / min(len(self.sample2_keypoints), 100)
+                        print(f"    Sample2 matches: {len(matches2)}, score: {score2:.3f}")
 
         # Keypoints visualization (optional)
         if self.show_keypoints_var.get():
             vis_frame = self.draw_keypoints(vis_frame, frame_kp, color=(0, 255, 255), radius=2)
+
+        # Log detection status
+        if results:
+            print(f"  >>> DETECTED: Frame {self.current_frame_number} - {', '.join(results)}")
+        else:
+            print(f"  . Frame {self.current_frame_number}: No detection")
 
         self.display_image(vis_frame, self.video_label)
 
@@ -1250,7 +1405,6 @@ def main():
     root = tk.Tk()
     app = KNIFTVideoObjectMatcher(root)
 
-    # Handle window closing
     def on_closing():
         app.cleanup()
         root.destroy()
