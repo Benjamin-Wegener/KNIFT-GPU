@@ -1,26 +1,5 @@
 #!/usr/bin/env python3
 
-"""
-KNIFT-GPU: Mobile-Optimized Feature Descriptor Training (~100K Parameters)
-
-GPU-compatible reimplementation of MediaPipe's KNIFT (Keypoint Neural Invariant Feature Transform)
-feature descriptor, designed for efficient on-device inference with TensorFlow Lite GPU delegates.
-
-Console-based training of the ~100K-parameter KNIFT-GPU model with real-time metrics,
-alignment task visualization, and export to TFLite. Shows model
-convergence and performance improvement during training.
-
-Features:
-- Real-time loss and accuracy tracking
-- Alignment task during training
-- Automatic model checkpointing
-- Final TFLite export with batch sizes optimized for mobile GPU inference
-- GPU-compatible architecture (no L2 normalization, fixed shapes only)
-
-Author: Benjamin-Wegener
-Version: 2.0.0
-"""
-
 import os
 import sys
 import json
@@ -35,44 +14,14 @@ import random
 import math
 import glob
 
-# === INCEPTION-LIKE MODEL ARCHITECTURE ===
-
 def build_model(input_shape=(32, 32, 1), output_dim=40, batch_size=None, name="knift_gpu_model"):
-    """
-    Build Inception-like CNN model for KNIFT-GPU feature descriptors.
+    print("Building Inception-like Architecture...")
 
-    GPU-compatible reimplementation of MediaPipe's KNIFT that eliminates operations
-    incompatible with TFLite GPU delegates (L2 normalization, dynamic reshapes).
-
-    Lightweight Inception-based CNN (~100K parameters):
-    - Input: 32×32 grayscale patches
-    - Output: 40-dimensional float32 embeddings (unnormalized)
-    - Operations: CONV_2D, MAX_POOL_2D, AVERAGE_POOL_2D, CONCATENATION, BATCH_NORM, DENSE, RELU
-    - GPU Compatible: All operations supported by TFLite GPU delegate
-    - No L2 normalization applied (deferred to matching to maintain GPU compatibility)
-
-    Args:
-        input_shape: Tuple, input image shape (height, width, channels)
-        output_dim: Int, dimension of output embeddings
-        batch_size: Int or None, static batch size for TFLite compatibility
-        name: String, model name
-
-    Returns:
-        keras.Model: Compiled model ready for training
-    """
-    print("🏗️  Building Inception-like Architecture...")
-    print(f"   Input Shape: {input_shape}")
-    print(f"   Output Dimension: {output_dim}")
-    print(f"   Batch Size: {batch_size}")
-
-    # Input layer
     if batch_size is not None:
         inputs = tf.keras.layers.Input(shape=input_shape, batch_size=batch_size, name="input")
     else:
         inputs = tf.keras.layers.Input(shape=input_shape, name="input")
 
-    # === STEM BLOCK ===
-    print("📐 Building Stem Block...")
     x = tf.keras.layers.Conv2D(
         filters=16,
         kernel_size=3,
@@ -84,8 +33,6 @@ def build_model(input_shape=(32, 32, 1), output_dim=40, batch_size=None, name="k
     x = tf.keras.layers.BatchNormalization(name='stem_bn')(x)
     x = tf.keras.layers.MaxPooling2D(pool_size=2, strides=2, name='stem_pool')(x)
 
-    # === INCEPTION MODULE 1 ===
-    print("🏗️  Building Inception Module 1...")
     x = inception_module(x, {
         'name': 'inception1',
         'branch1x1': 12,
@@ -96,8 +43,6 @@ def build_model(input_shape=(32, 32, 1), output_dim=40, batch_size=None, name="k
         'branch_pool_proj': 8
     })
 
-    # === INCEPTION MODULE 2 ===
-    print("🏗️  Building Inception Module 2...")
     x = inception_module(x, {
         'name': 'inception2',
         'branch1x1': 16,
@@ -109,8 +54,6 @@ def build_model(input_shape=(32, 32, 1), output_dim=40, batch_size=None, name="k
     })
     x = tf.keras.layers.MaxPooling2D(pool_size=2, strides=2, name='pool2')(x)
 
-    # === INCEPTION MODULE 3 ===
-    print("🏗️  Building Inception Module 3...")
     x = inception_module(x, {
         'name': 'inception3',
         'branch1x1': 24,
@@ -121,8 +64,6 @@ def build_model(input_shape=(32, 32, 1), output_dim=40, batch_size=None, name="k
         'branch_pool_proj': 24
     })
 
-    # === INCEPTION MODULE 4 ===
-    print("🏗️  Building Inception Module 4...")
     x = inception_module(x, {
         'name': 'inception4',
         'branch1x1': 28,
@@ -134,8 +75,6 @@ def build_model(input_shape=(32, 32, 1), output_dim=40, batch_size=None, name="k
     })
     x = tf.keras.layers.MaxPooling2D(pool_size=2, strides=2, name='pool3')(x)
 
-    # === FINAL INCEPTION MODULE ===
-    print("🏗️  Building Final Inception Module...")
     x = inception_module(x, {
         'name': 'inception5',
         'branch1x1': 28,
@@ -146,37 +85,34 @@ def build_model(input_shape=(32, 32, 1), output_dim=40, batch_size=None, name="k
         'branch_pool_proj': 24
     })
 
-    # === OUTPUT BLOCK ===
-    print("📤 Building Output Block...")
-    x = tf.keras.layers.GlobalAveragePooling2D(name='global_pool')(x)
-    outputs = tf.keras.layers.Dense(
-        units=output_dim,
+    # Replace GlobalAveragePooling2D with AveragePooling2D
+    # For the regular model: input is (4, 4, 108), use pool_size=(4, 4)
+    x = tf.keras.layers.AveragePooling2D(pool_size=(4, 4), strides=(1, 1),
+                                         padding="valid", name="globalpool_pool")(x)
+
+    # Replace FC with 1x1 CONV_2D followed by reshape for better GPU compatibility
+    x = tf.keras.layers.Conv2D(
+        filters=output_dim,
+        kernel_size=1,
+        strides=1,
+        padding='valid',
         activation=None,
-        name='embedding'
+        name='embedding_conv'
     )(x)
 
-    # Create model
+    # Reshape from (batch, 1, 1, output_dim) to (batch, output_dim)
+    x = tf.keras.layers.Reshape((output_dim,), name='embedding_reshape')(x)
+    outputs = x
+
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name=name)
-
-    # Print architecture summary
-    print("\n📊 Model Architecture Summary:")
     model.summary()
-    param_count = model.count_params()
-    print(f"\n🎯 Total Parameters: {param_count:,}")
-    print(f"🎯 Target Parameters: ~100,000")
-    print(f"🎯 In target range (95k-100k): {'✅ YES' if 95000 <= param_count <= 100000 else '❌ NO'}")
 
-    print("\n🔧 GPU Compatibility Check:")
-    print("✅ CONV_2D, AVERAGE_POOL_2D, MAX_POOL_2D")
-    print("✅ CONCATENATION, FULLY_CONNECTED, BATCH_NORM")
-    print("✅ NO L2_NORMALIZATION (GPU-Compatible)")
+    param_count = model.count_params()
+    print(f"Total Parameters: {param_count:,}")
 
     return model
 
 def inception_module(inputs, config):
-    """
-    Build GPU-compatible Inception module with reduced parameters for feature extraction.
-    """
     name = config['name']
     branch1x1 = config['branch1x1']
     branch3x3_reduce = config['branch3x3_reduce']
@@ -185,7 +121,6 @@ def inception_module(inputs, config):
     branch5x5 = config['branch5x5']
     branch_pool_proj = config['branch_pool_proj']
 
-    # Branch 1: 1x1 conv
     branch1 = tf.keras.layers.Conv2D(
         filters=branch1x1,
         kernel_size=1,
@@ -194,7 +129,6 @@ def inception_module(inputs, config):
         name=f'{name}_b1_1x1'
     )(inputs)
 
-    # Branch 2: 1x1 -> 3x3
     branch2 = tf.keras.layers.Conv2D(
         filters=branch3x3_reduce,
         kernel_size=1,
@@ -210,7 +144,6 @@ def inception_module(inputs, config):
         name=f'{name}_b2_3x3'
     )(branch2)
 
-    # Branch 3: 1x1 -> 5x5
     branch3 = tf.keras.layers.Conv2D(
         filters=branch5x5_reduce,
         kernel_size=1,
@@ -226,7 +159,6 @@ def inception_module(inputs, config):
         name=f'{name}_b3_5x5'
     )(branch3)
 
-    # Branch 4: MaxPool -> 1x1
     branch4 = tf.keras.layers.MaxPooling2D(
         pool_size=3,
         strides=1,
@@ -241,16 +173,12 @@ def inception_module(inputs, config):
         name=f'{name}_b4_1x1'
     )(branch4)
 
-    # Concatenate all branches
     concatenated = tf.keras.layers.Concatenate(name=f'{name}_concat')(
         [branch1, branch2, branch3, branch4]
     )
 
-    # Batch normalization
     output = tf.keras.layers.BatchNormalization(name=f'{name}_bn')(concatenated)
     return output
-
-# === CUSTOM TRIPLET METRICS ===
 
 class PositiveDistanceMetric(tf.keras.metrics.Metric):
     def __init__(self, name='pos_dist', **kwargs):
@@ -292,19 +220,12 @@ class NegativeDistanceMetric(tf.keras.metrics.Metric):
         self.total.assign(0.0)
         self.count.assign(0.0)
 
-# === BATCH-HARD TRIPLET LOSS ===
-
 class BatchHardTripletLoss(tf.keras.losses.Loss):
-    """
-    Batch-hard triplet loss with in-batch semi-hard negative mining.
-    Mines hardest negatives from the current batch embeddings.
-    """
     def __init__(self, margin=1.0, **kwargs):
         super().__init__(**kwargs)
         self.margin = margin
 
     def call(self, y_true, y_pred):
-        # Split into anchors, positives, negatives
         total_batch_size = tf.shape(y_pred)[0]
         batch_size = total_batch_size // 3
 
@@ -312,23 +233,19 @@ class BatchHardTripletLoss(tf.keras.losses.Loss):
         positives = y_pred[batch_size:2*batch_size]
         negatives = y_pred[2*batch_size:3*batch_size]
 
-        # Compute positive distances
         pos_dist = tf.reduce_sum(tf.square(anchors - positives), axis=1)
 
-        # Compute pairwise distances between anchors and ALL negatives
         anchor_neg_dist = tf.reduce_sum(
             tf.square(tf.expand_dims(anchors, 1) - tf.expand_dims(negatives, 0)),
             axis=2
         )
 
-        # Semi-hard mining: d(a,p) < d(a,n) < d(a,p) + margin
         pos_dist_expanded = tf.expand_dims(pos_dist, 1)
         semi_hard_mask = tf.logical_and(
             anchor_neg_dist > pos_dist_expanded,
             anchor_neg_dist < pos_dist_expanded + self.margin
         )
 
-        # Get hardest semi-hard negative
         masked_dist = tf.where(
             semi_hard_mask,
             anchor_neg_dist,
@@ -337,7 +254,6 @@ class BatchHardTripletLoss(tf.keras.losses.Loss):
 
         hardest_neg_dist = tf.reduce_min(masked_dist, axis=1)
 
-        # Fallback: if all negatives too easy, use actual hardest
         all_easy_mask = tf.equal(hardest_neg_dist, tf.float32.max)
         hardest_neg_dist = tf.where(
             all_easy_mask,
@@ -345,40 +261,31 @@ class BatchHardTripletLoss(tf.keras.losses.Loss):
             hardest_neg_dist
         )
 
-        # Compute triplet loss
         loss = tf.maximum(pos_dist - hardest_neg_dist + self.margin, 0.0)
         return tf.reduce_mean(loss)
 
-# === FEATURE EXTRACTOR ===
-
 class FeatureExtractor:
-    """Extracts GPU-compatible feature embeddings from image patches using trained KNIFT-GPU model"""
-
     def __init__(self, model: tf.keras.Model = None):
         self.model = model
         self.input_size = (32, 32)
         self.embedding_dim = 40
 
         if self.model:
-            print(f"🔧 KNIFT-GPU FeatureExtractor initialized with model: {self.model.name}")
+            print(f"KNIFT-GPU FeatureExtractor initialized with model: {self.model.name}")
 
     def extract_features(self, patches: np.ndarray) -> np.ndarray:
-        """Extract features from patches using the model"""
         if self.model is None:
             raise ValueError("No model loaded for feature extraction")
 
         if len(patches) == 0:
             return np.array([])
 
-        # Handle different input shapes
         if len(patches.shape) == 3:
             patches = np.expand_dims(patches, axis=-1)
 
-        # Normalize patches to [0, 1]
         if patches.max() > 1.0:
             patches = patches.astype(np.float32) / 255.0
 
-        # Ensure correct shape [num_patches, 32, 32, 1]
         if patches.shape[1:3] != self.input_size:
             resized_patches = []
             for patch in patches:
@@ -390,34 +297,25 @@ class FeatureExtractor:
                 resized_patches.append(patch)
             patches = np.array(resized_patches)
 
-        # Extract features
         try:
             features = self.model.predict(patches, verbose=0)
             return features
         except Exception as e:
-            print(f"❌ Error during feature extraction: {e}")
+            print(f"Error during feature extraction: {e}")
             return np.array([])
 
-# === DATA LOADER ===
-
 class DataLoader:
-    """Basic data loader for KNIFT-GPU"""
-
     def __init__(self, data_path, img_size=(32, 32)):
         self.data_path = Path(data_path)
         self.img_size = img_size
         self.images = []
         self.image_paths = []
 
-        print("📊 Initializing KNIFT-GPU Data Loader...")
-        print(f"   Data Path: {self.data_path}")
-        print(f"   Target Size: {self.img_size}")
-
+        print("Initializing KNIFT-GPU Data Loader...")
         self._load_image_paths()
-        print(f"   Found Images: {len(self.image_paths)}")
+        print(f"Found Images: {len(self.image_paths)}")
 
     def _load_image_paths(self):
-        """Load all image paths from data directory, excluding baboon for validation."""
         extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
         for ext in extensions:
             pattern = self.data_path / ext
@@ -435,11 +333,7 @@ class DataLoader:
     def __len__(self):
         return self.get_num_images()
 
-# === AUGMENTATION PIPELINE ===
-
 class HeavyAugmentation:
-    """GPU-compatible heavy augmentation pipeline for training patches"""
-
     def __init__(self,
                  rotation_range=15,
                  brightness_range=0.2,
@@ -459,13 +353,7 @@ class HeavyAugmentation:
         self.noise_probability = noise_probability
         self.blur_probability = blur_probability
 
-        print("🎨 Initializing GPU-Compatible Heavy Augmentation Pipeline...")
-        print(f"   Rotation range: ±{rotation_range}°")
-        print(f"   Brightness range: ±{brightness_range*100}%")
-        print(f"   Contrast range: ±{contrast_range*100}%")
-        print(f"   Noise std: {noise_std}")
-        print(f"   Blur radius: {blur_radius_range}")
-        print(f"   Flip probability: {flip_probability}")
+        print("Initializing GPU-Compatible Heavy Augmentation Pipeline...")
 
     def rotate_image(self, image: np.ndarray, angle: float) -> np.ndarray:
         if angle == 0:
@@ -507,36 +395,29 @@ class HeavyAugmentation:
         return np.fliplr(image)
 
     def augment(self, image: np.ndarray) -> np.ndarray:
-        """Apply heavy augmentation to image"""
         augmented = image.copy()
 
-        # Random rotation
         angle = random.uniform(-self.rotation_range, self.rotation_range)
         augmented = self.rotate_image(augmented, angle)
 
-        # Random brightness
         if random.random() < 0.8:
             brightness_factor = 1.0 + random.uniform(-self.brightness_range, self.brightness_range)
             brightness_factor = max(0.1, min(2.0, brightness_factor))
             augmented = self.adjust_brightness(augmented, brightness_factor)
 
-        # Random contrast
         if random.random() < 0.8:
             contrast_factor = 1.0 + random.uniform(-self.contrast_range, self.contrast_range)
             contrast_factor = max(0.1, min(2.0, contrast_factor))
             augmented = self.adjust_contrast(augmented, contrast_factor)
 
-        # Horizontal flip
         if random.random() < self.flip_probability:
             augmented = self.horizontal_flip(augmented)
 
-        # Add noise
         if random.random() < self.noise_probability:
             noise_std = random.uniform(0, self.noise_std)
             if noise_std > 0:
                 augmented = self.add_noise(augmented, noise_std)
 
-        # Add blur
         if random.random() < self.blur_probability:
             blur_radius = random.uniform(*self.blur_radius_range)
             augmented = self.add_blur(augmented, blur_radius)
@@ -545,32 +426,24 @@ class HeavyAugmentation:
         augmented = augmented[np.newaxis, ..., np.newaxis]
         return augmented
 
-# === KEYPOINT PATCH DATASET ===
-
 class KeypointPatchDataset:
-    """Extract GPU-compatible patches from keypoints on high-res images for KNIFT-GPU"""
-
     def __init__(self, image_dir, patches_per_image=100):
         self.image_dir = Path(image_dir)
         self.patches_per_image = patches_per_image
         self.images = []
         self.keypoints = []
 
-        print("🎯 Initializing KNIFT-GPU Keypoint Patch Dataset...")
-        print(f"   Image directory: {self.image_dir}")
-        print(f"   Patches per image: {self.patches_per_image}")
-
+        print("Initializing KNIFT-GPU Keypoint Patch Dataset...")
         self.images = self.load_high_res_images()
         self.keypoints = self.detect_all_keypoints()
 
         if len(self.images) < 2:
             raise ValueError("Need at least 2 images for triplet training")
 
-        print(f"   Loaded {len(self.images)} images")
-        print(f"   Total keypoints: {len(self.keypoints)}")
+        print(f"Loaded {len(self.images)} images")
+        print(f"Total keypoints: {len(self.keypoints)}")
 
     def load_high_res_images(self):
-        """Load high-resolution images from directory"""
         image_paths = []
         extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
         for ext in extensions:
@@ -587,7 +460,6 @@ class KeypointPatchDataset:
         return images
 
     def detect_all_keypoints(self):
-        """Detect keypoints on all images"""
         fast = cv2.FastFeatureDetector_create(threshold=20)
         all_kps = []
         for idx, img in enumerate(self.images):
@@ -598,7 +470,6 @@ class KeypointPatchDataset:
         return all_kps
 
     def extract_patch(self, image, keypoint, size=32):
-        """Extract a patch of given size around the keypoint"""
         x, y = int(keypoint.pt[0]), int(keypoint.pt[1])
         half_size = size // 2
 
@@ -617,7 +488,6 @@ class KeypointPatchDataset:
         return patch
 
     def generate_correspondence_pair(self, image, keypoint):
-        """Generate anchor and positive patches that simulate real viewpoint change"""
         anchor_patch = self.extract_patch(image, keypoint, size=32)
 
         h, w = image.shape
@@ -648,7 +518,6 @@ class KeypointPatchDataset:
         pt = np.array([keypoint.pt[0], keypoint.pt[1], 1], dtype=np.float32)
         new_pt = transform_matrix @ pt
 
-        # Boundary check
         margin = 16
         if (new_pt[0] < margin or new_pt[0] >= w - margin or
             new_pt[1] < margin or new_pt[1] >= h - margin):
@@ -659,31 +528,26 @@ class KeypointPatchDataset:
 
         return anchor_patch, positive_patch
 
-# === TRIPLET GENERATOR ===
-
 class OnlineTripletGenerator:
-    """GPU-compatible online triplet generator for KNIFT-GPU training"""
-
     def __init__(self,
                  data_loader: DataLoader,
                  augmentation: HeavyAugmentation,
-                 batch_size: int = 32):
+                 batch_size: int = 64):
 
         self.data_loader = data_loader
         self.augmentation = augmentation
         self.batch_size = batch_size
         self.keypoint_dataset = KeypointPatchDataset(data_loader.data_path)
 
-        print("🔄 Initializing GPU-Compatible Online Triplet Generator...")
-        print(f"   Loaded {len(self.keypoint_dataset.images)} images")
-        print(f"   Total keypoints: {len(self.keypoint_dataset.keypoints)}")
-        print(f"   Batch size: {batch_size}")
+        print("Initializing GPU-Compatible Online Triplet Generator...")
+        print(f"Loaded {len(self.keypoint_dataset.images)} images")
+        print(f"Total keypoints: {len(self.keypoint_dataset.keypoints)}")
+        print(f"Batch size: {batch_size}")
 
         if len(self.keypoint_dataset.images) < 2:
             raise ValueError("Need at least 2 images for triplet training")
 
     def _generate_positive_pair(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Generate a positive pair using keypoint correspondence simulation"""
         if len(self.keypoint_dataset.keypoints) == 0:
             raise ValueError("No keypoints found for correspondence simulation")
 
@@ -701,7 +565,6 @@ class OnlineTripletGenerator:
         return anchor_augmented, positive_augmented
 
     def _generate_negative_patch(self) -> np.ndarray:
-        """Generate a negative patch from a different image/keypoint"""
         if len(self.keypoint_dataset.keypoints) == 0:
             raise ValueError("No keypoints found for negative patch generation")
 
@@ -724,7 +587,6 @@ class OnlineTripletGenerator:
         return negative_augmented
 
     def generate_triplet_batch(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Generate a batch of triplets"""
         anchors = []
         positives = []
         negatives = []
@@ -743,49 +605,42 @@ class OnlineTripletGenerator:
 
         return anchors, positives, negatives
 
-# === ENVIRONMENT SETUP ===
-
 def setup_environment(training_dir: str = "Set14"):
-    """Setup the GPU-compatible environment and check dependencies"""
-    print("🔧 Setting up KNIFT-GPU Training Environment...")
-    print(f"   TensorFlow version: {tf.__version__}")
-    print(f"   GPU available: {'✅ Yes' if tf.config.list_physical_devices('GPU') else '❌ No (CPU only)'}")
-    print(f"   OpenCV version: {cv2.__version__}")
+    print("Setting up KNIFT-GPU Training Environment...")
+    print(f"TensorFlow version: {tf.__version__}")
+    print(f"GPU available: {'Yes' if tf.config.list_physical_devices('GPU') else 'No (CPU only)'}")
+    print(f"OpenCV version: {cv2.__version__}")
 
     if not os.path.exists(training_dir):
-        print(f"❌ Training directory does not exist: {training_dir}")
+        print(f"Training directory does not exist: {training_dir}")
         sys.exit(1)
 
     dataset_files = [f for f in os.listdir(training_dir)
                      if f.lower().endswith(('.jpg', '.jpeg', '.png')) and "baboon" not in f.lower()]
 
     if len(dataset_files) == 0:
-        print(f"❌ No training image files found in {training_dir} (excluding baboon)")
+        print(f"No training image files found in {training_dir} (excluding baboon)")
         sys.exit(1)
 
-    print(f"   ✅ Found {len(dataset_files)} training images (excluding baboon)")
+    print(f"Found {len(dataset_files)} training images (excluding baboon)")
 
     baboon_files = [f for f in os.listdir(training_dir) if "baboon" in f.lower() and f.lower().endswith(('.jpg', '.jpeg', '.png'))]
     if len(baboon_files) > 0:
-        print(f"   ✅ Found baboon image for validation: {baboon_files[0]}")
+        print(f"Found baboon image for validation: {baboon_files[0]}")
     else:
-        print(f"   ⚠️  No baboon image found in {training_dir} - validation will be skipped")
+        print(f"No baboon image found in {training_dir} - validation will be skipped")
 
     directories = ['outputs', 'outputs/models', 'logs', 'checkpoints']
     for directory in directories:
         os.makedirs(directory, exist_ok=True)
 
-    print("✅ Environment setup completed!\n")
-
-# === CONSOLE TRAINING CLASS ===
+    print("Environment setup completed!\n")
 
 class ConsoleTraining:
-    """Console-based training with GPU-compatible features and alignment tasks"""
-
     def __init__(self, training_dir: str = "Set14",
                  validation_dir: str = "Set14",
                  epochs: int = 250,
-                 batch_size: int = 32,
+                 batch_size: int = 64,
                  steps_per_epoch: int = 20):
 
         self.training_dir = training_dir
@@ -800,7 +655,6 @@ class ConsoleTraining:
         self.current_loss = 0.0
         self.current_accuracy = 0.0
 
-        # Create the GPU-compatible model for training
         self.train_model = build_model(batch_size=None, name="knift_gpu_training_model")
         self.train_model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
@@ -808,33 +662,28 @@ class ConsoleTraining:
             metrics=[PositiveDistanceMetric(), NegativeDistanceMetric()]
         )
 
-        # Create the GPU-compatible model for TFLite export
         self.export_model = build_model(batch_size=1000, name="knift_gpu_export_model")
 
-        # Initialize feature extractor
         self.feature_extractor = FeatureExtractor(self.train_model)
 
-        # Initialize validation directory
         self.validation_images = (None, None)
         if os.path.exists(self.validation_dir):
-            print("✅ Set14 directory found - will use baboon for validation alignments per epoch")
+            print("Set14 directory found - will use baboon for validation alignments per epoch")
         else:
-            print("⚠️  Set14 directory not found - will skip validation alignments")
+            print("Set14 directory not found - will skip validation alignments")
 
     def _create_real_data_generator(self, data_dir):
-        """Create real data generator from the dataset directory"""
-        print(f"📂 Creating real data generator from: {data_dir}")
+        print(f"Creating real data generator from: {data_dir}")
 
         data_loader = DataLoader(data_dir)
         if len(data_loader) == 0:
             raise ValueError(f"No images found in dataset directory: {data_dir}")
 
-        # Filter out baboon from training
         original_paths = data_loader.get_image_paths()
         filtered_paths = [path for path in original_paths if "baboon" not in os.path.basename(path).lower()]
         data_loader.image_paths = filtered_paths
 
-        print(f"📊 Found {len(data_loader)} real images for training (excluding baboon)")
+        print(f"Found {len(data_loader)} real images for training (excluding baboon)")
 
         augmentation = HeavyAugmentation(
             rotation_range=15.0,
@@ -862,7 +711,6 @@ class ConsoleTraining:
         return real_generator()
 
     def load_validation_pair(self):
-        """Load validation image - specifically use baboon from Set14 directory"""
         if not os.path.exists(self.validation_dir):
             return None, None
 
@@ -870,21 +718,19 @@ class ConsoleTraining:
         img_path = os.path.join(self.validation_dir, selected_file)
 
         if not os.path.exists(img_path):
-            print(f"   ❌ Validation image {selected_file} not found in {self.validation_dir}")
+            print(f"Validation image {selected_file} not found in {self.validation_dir}")
             return None, None
 
         img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
         if img is None:
-            print(f"   ❌ Could not load validation image: {img_path}")
+            print(f"Could not load validation image: {img_path}")
             return None, None
 
         h, w = img.shape
 
-        # Random rotation (-15 to +15 degrees)
         angle = random.uniform(-15, 15)
         M_rot = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
 
-        # Random translation
         tx = random.uniform(-0.1 * w, 0.1 * w)
         ty = random.uniform(-0.1 * h, 0.1 * h)
         M_rot[0, 2] += tx
@@ -894,13 +740,12 @@ class ConsoleTraining:
                                         borderMode=cv2.BORDER_CONSTANT,
                                         borderValue=0)
 
-        print(f"   ✅ Loaded validation image: {selected_file}")
-        print(f"   Applied transform: rotation={angle:.1f}°, tx={tx:.1f}px, ty={ty:.1f}px")
+        print(f"Loaded validation image: {selected_file}")
+        print(f"Applied transform: rotation={angle:.1f}°, tx={tx:.1f}px, ty={ty:.1f}px")
 
         return img, img_misaligned
 
     def test_alignment_quality(self):
-        """Test how well model matches features between original and misaligned image"""
         if not hasattr(self, 'validation_images') or self.validation_images[0] is None:
             return {'quality': 0, 'matches': 0, 'inliers': 0}
 
@@ -974,7 +819,6 @@ class ConsoleTraining:
             return {'quality': 0, 'matches': 0, 'inliers': 0}
 
     def extract_patches(self, img, keypoints, patch_size=32):
-        """Extract 32x32 patches around keypoints"""
         patches = []
         for kp in keypoints:
             x, y = int(kp.pt[0]), int(kp.pt[1])
@@ -997,7 +841,6 @@ class ConsoleTraining:
         return np.array(patches) if patches else np.array([])
 
     def match_features_lowe_ratio(self, desc1, desc2, kp1, kp2, ratio_threshold=0.75):
-        """Match features using Lowe's ratio test"""
         if len(desc1) == 0 or len(desc2) == 0:
             return []
 
@@ -1024,9 +867,8 @@ class ConsoleTraining:
         return [(i, idx) for i, idx, _ in good_matches]
 
     def run_training(self):
-        """Run the actual training with batch-hard triplet loss"""
         try:
-            print(f"🎯 Starting training for {self.epochs} epochs with batch-hard triplet loss")
+            print(f"Starting training for {self.epochs} epochs with batch-hard triplet loss")
             data_generator = self._create_real_data_generator(self.training_dir)
 
             history = self.train_model.fit(
@@ -1037,21 +879,18 @@ class ConsoleTraining:
                 verbose=1
             )
 
-            print("✅ Training completed!")
+            print("Training completed!")
 
-            # Save final model
             final_model_path = os.path.join("outputs/models", f"knift_gpu_final_model_epoch_{self.epochs:03d}.weights.h5")
-            print(f"💾 Saving final model: {final_model_path}")
+            print(f"Saving final model: {final_model_path}")
             self.train_model.save_weights(final_model_path)
-            print(f"✅ Final model saved successfully")
+            print(f"Final model saved successfully")
 
-            # Export to TFLite
             print("Exporting to TFLite...")
             self.export_to_tflite()
 
-            # Run comprehensive baboon tests
             print("\n" + "="*60)
-            print("🧪 Running Comprehensive Baboon Tests")
+            print("Running Comprehensive Baboon Tests")
             print("="*60)
             self.run_comprehensive_baboon_tests()
 
@@ -1061,7 +900,6 @@ class ConsoleTraining:
             traceback.print_exc()
 
     def _create_training_callback(self):
-        """Create the training callback with access to parent class"""
         class TrainingCallback(tf.keras.callbacks.Callback):
             def __init__(self, parent):
                 super().__init__()
@@ -1074,7 +912,7 @@ class ConsoleTraining:
                     loss = logs.get('loss', 0)
                     pos_dist = logs.get('pos_dist', 0)
                     neg_dist = logs.get('neg_dist', 0)
-                    print(f"   Batch {batch}: Loss = {loss:.4f}, Pos Dist = {pos_dist:.4f}, Neg Dist = {neg_dist:.4f}")
+                    print(f"Batch {batch}: Loss = {loss:.4f}, Pos Dist = {pos_dist:.4f}, Neg Dist = {neg_dist:.4f}")
 
             def on_epoch_end(self, epoch, logs=None):
                 loss = logs.get('loss', 0)
@@ -1088,11 +926,11 @@ class ConsoleTraining:
                 self.parent.loss_history.append(loss)
                 self.parent.accuracy_history.append((neg_dist - pos_dist) if pos_dist != 0 else 0)
 
-                print(f"   Testing alignment quality...")
+                print(f"Testing alignment quality...")
                 self.parent.validation_images = self.parent.load_validation_pair()
                 alignment_result = self.parent.test_alignment_quality()
 
-                print(f"   Alignment: Matches={alignment_result['matches']}, "
+                print(f"Alignment: Matches={alignment_result['matches']}, "
                       f"Inliers={alignment_result['inliers']}, "
                       f"Quality={alignment_result['quality']:.2f}%")
 
@@ -1101,50 +939,48 @@ class ConsoleTraining:
                         "checkpoints",
                         f"checkpoint_epoch_{epoch+1:03d}_loss_{loss:.4f}.weights.h5"
                     )
-                    print(f"   💾 Saving checkpoint at epoch {epoch+1}: {checkpoint_path}")
+                    print(f"Saving checkpoint at epoch {epoch+1}: {checkpoint_path}")
                     self.parent.train_model.save_weights(checkpoint_path)
 
         return TrainingCallback(self)
 
     def run_comprehensive_baboon_tests(self):
-        """Run comprehensive baboon tests with various levels of misalignment and augmentation"""
         if not os.path.exists(self.validation_dir):
-            print("⚠️  Validation directory not found - skipping baboon tests")
+            print("Validation directory not found - skipping baboon tests")
             return
 
         baboon_path = os.path.join(self.validation_dir, "baboon.jpeg")
         if not os.path.exists(baboon_path):
-            print(f"⚠️  Baboon image not found: {baboon_path}")
+            print(f"Baboon image not found: {baboon_path}")
             return
 
         img_orig = cv2.imread(baboon_path, cv2.IMREAD_GRAYSCALE)
         if img_orig is None:
-            print(f"❌ Could not load baboon image")
+            print(f"Could not load baboon image")
             return
 
-        print("\n🎨 Test 1: Mild Misalignment (rotation ±5°, translation ±5%)")
+        print("\nTest 1: Mild Misalignment (rotation ±5°, translation ±5%)")
         self._test_misalignment_level(img_orig, rotation_range=5, translation_percent=0.05, scale_range=(0.95, 1.05))
 
-        print("\n🎨 Test 2: Moderate Misalignment (rotation ±15°, translation ±10%)")
+        print("\nTest 2: Moderate Misalignment (rotation ±15°, translation ±10%)")
         self._test_misalignment_level(img_orig, rotation_range=15, translation_percent=0.10, scale_range=(0.90, 1.10))
 
-        print("\n🎨 Test 3: Severe Misalignment (rotation ±30°, translation ±20%)")
+        print("\nTest 3: Severe Misalignment (rotation ±30°, translation ±20%)")
         self._test_misalignment_level(img_orig, rotation_range=30, translation_percent=0.20, scale_range=(0.80, 1.20))
 
-        print("\n🎨 Test 4: Extreme Misalignment (rotation ±45°, translation ±30%)")
+        print("\nTest 4: Extreme Misalignment (rotation ±45°, translation ±30%)")
         self._test_misalignment_level(img_orig, rotation_range=45, translation_percent=0.30, scale_range=(0.70, 1.30))
 
-        print("\n🎨 Test 5: Heavy Augmentation (brightness, contrast, noise, blur)")
+        print("\nTest 5: Heavy Augmentation (brightness, contrast, noise, blur)")
         self._test_augmentation_robustness(img_orig)
 
-        print("\n🎨 Test 6: Combined Misalignment + Augmentation")
+        print("\nTest 6: Combined Misalignment + Augmentation")
         self._test_combined_stress(img_orig)
 
     def _test_misalignment_level(self, img, rotation_range, translation_percent, scale_range):
-        """Test a specific level of geometric misalignment"""
         results = []
 
-        for i in range(3):  # Run 3 tests per level
+        for i in range(3):
             h, w = img.shape
             angle = random.uniform(-rotation_range, rotation_range)
             scale = random.uniform(*scale_range)
@@ -1163,42 +999,35 @@ class ConsoleTraining:
             result = self.test_alignment_quality()
             results.append(result)
 
-            print(f"   Run {i+1}: Angle={angle:.1f}°, Scale={scale:.2f}, Tx={tx:.1f}px, Ty={ty:.1f}px")
-            print(f"   Matches={result['matches']}, Inliers={result['inliers']}, Quality={result['quality']:.2f}%")
+            print(f"Run {i+1}: Angle={angle:.1f}°, Scale={scale:.2f}, Tx={tx:.1f}px, Ty={ty:.1f}px")
+            print(f"Matches={result['matches']}, Inliers={result['inliers']}, Quality={result['quality']:.2f}%")
 
         avg_quality = np.mean([r['quality'] for r in results])
         avg_matches = np.mean([r['matches'] for r in results])
         avg_inliers = np.mean([r['inliers'] for r in results])
 
-        print(f"\n   📊 Average Results:")
-        print(f"   Quality: {avg_quality:.2f}%, Matches: {avg_matches:.1f}, Inliers: {avg_inliers:.1f}")
+        print(f"\nAverage Results:")
+        print(f"Quality: {avg_quality:.2f}%, Matches: {avg_matches:.1f}, Inliers: {avg_inliers:.1f}")
 
     def _test_augmentation_robustness(self, img):
-        """Test robustness to appearance augmentations"""
         results = []
 
         for i in range(3):
-            # Apply heavy augmentation
             img_pil = Image.fromarray(img)
 
-            # Random brightness
             brightness_factor = random.uniform(0.5, 1.5)
             enhancer = ImageEnhance.Brightness(img_pil)
             img_aug = enhancer.enhance(brightness_factor)
 
-            # Random contrast
             contrast_factor = random.uniform(0.5, 1.5)
             enhancer = ImageEnhance.Contrast(img_aug)
             img_aug = enhancer.enhance(contrast_factor)
 
-            # Random blur
             blur_radius = random.uniform(1.0, 3.0)
             img_aug = img_aug.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 
-            # Convert back to numpy
             img_augmented = np.array(img_aug, dtype=np.uint8)
 
-            # Add noise
             noise = np.random.normal(0, 15, img_augmented.shape)
             img_augmented = np.clip(img_augmented + noise, 0, 255).astype(np.uint8)
 
@@ -1206,24 +1035,22 @@ class ConsoleTraining:
             result = self.test_alignment_quality()
             results.append(result)
 
-            print(f"   Run {i+1}: Brightness={brightness_factor:.2f}, Contrast={contrast_factor:.2f}, Blur={blur_radius:.2f}px")
-            print(f"   Matches={result['matches']}, Inliers={result['inliers']}, Quality={result['quality']:.2f}%")
+            print(f"Run {i+1}: Brightness={brightness_factor:.2f}, Contrast={contrast_factor:.2f}, Blur={blur_radius:.2f}px")
+            print(f"Matches={result['matches']}, Inliers={result['inliers']}, Quality={result['quality']:.2f}%")
 
         avg_quality = np.mean([r['quality'] for r in results])
         avg_matches = np.mean([r['matches'] for r in results])
         avg_inliers = np.mean([r['inliers'] for r in results])
 
-        print(f"\n   📊 Average Results:")
-        print(f"   Quality: {avg_quality:.2f}%, Matches: {avg_matches:.1f}, Inliers: {avg_inliers:.1f}")
+        print(f"\nAverage Results:")
+        print(f"Quality: {avg_quality:.2f}%, Matches: {avg_matches:.1f}, Inliers: {avg_inliers:.1f}")
 
     def _test_combined_stress(self, img):
-        """Test combined geometric and appearance transformations"""
         results = []
 
         for i in range(3):
             h, w = img.shape
 
-            # Geometric transformation
             angle = random.uniform(-30, 30)
             scale = random.uniform(0.8, 1.2)
             tx = random.uniform(-0.2 * w, 0.2 * w)
@@ -1237,7 +1064,6 @@ class ConsoleTraining:
                                               borderMode=cv2.BORDER_CONSTANT,
                                               borderValue=0)
 
-            # Appearance augmentation
             img_pil = Image.fromarray(img_transformed)
 
             brightness_factor = random.uniform(0.6, 1.4)
@@ -1259,32 +1085,38 @@ class ConsoleTraining:
             result = self.test_alignment_quality()
             results.append(result)
 
-            print(f"   Run {i+1}: Angle={angle:.1f}°, Scale={scale:.2f}, Brightness={brightness_factor:.2f}")
-            print(f"   Matches={result['matches']}, Inliers={result['inliers']}, Quality={result['quality']:.2f}%")
+            print(f"Run {i+1}: Angle={angle:.1f}°, Scale={scale:.2f}, Brightness={brightness_factor:.2f}")
+            print(f"Matches={result['matches']}, Inliers={result['inliers']}, Quality={result['quality']:.2f}%")
 
         avg_quality = np.mean([r['quality'] for r in results])
         avg_matches = np.mean([r['matches'] for r in results])
         avg_inliers = np.mean([r['inliers'] for r in results])
 
-        print(f"\n   📊 Average Results:")
-        print(f"   Quality: {avg_quality:.2f}%, Matches: {avg_matches:.1f}, Inliers: {avg_inliers:.1f}")
+        print(f"\nAverage Results:")
+        print(f"Quality: {avg_quality:.2f}%, Matches: {avg_matches:.1f}, Inliers: {avg_inliers:.1f}")
 
     def export_to_tflite(self):
-        """Export the trained GPU-compatible model to TensorFlow Lite format"""
         try:
             final_model_path = os.path.join("outputs/models", f"knift_gpu_final_model_epoch_{self.epochs:03d}.weights.h5")
-            print("🎯 Converting model to TensorFlow Lite format...")
+            print("Converting model to TensorFlow Lite format...")
+
+            print("\nStarting BatchNorm fusion process...")
+            fused_model = self._fuse_batch_norms()
+            print("BatchNorm fusion completed!")
 
             batch_sizes = [200, 400, 1000]
-            model_names = ["knift_gpu_float.tflite", "knift_gpu_float_400.tflite", "knift_gpu_float_1k.tflite"]
 
-            for batch_size, model_name in zip(batch_sizes, model_names):
-                print(f"🎯 Creating model with batch size {batch_size}: {model_name}")
+            print("\nExporting fused models for GPU inference...")
+            fused_model_names = ["knift_gpu_fused_float.tflite", "knift_gpu_fused_float_400.tflite", "knift_gpu_fused_float_1k.tflite"]
 
-                export_model = build_model(batch_size=batch_size, name=f"knift_gpu_export_{batch_size}")
-                export_model.set_weights(self.train_model.get_weights())
+            for batch_size, model_name in zip(batch_sizes, fused_model_names):
+                print(f"Creating fused model with batch size {batch_size}: {model_name}")
 
-                converter = tf.lite.TFLiteConverter.from_keras_model(export_model)
+                # Instead of creating a new model with BN layers and then copying weights,
+                # recreate the fused model with the appropriate batch size
+                fused_batch_model = self._create_fused_model_with_batch_size(fused_model, batch_size)
+
+                converter = tf.lite.TFLiteConverter.from_keras_model(fused_batch_model)
                 converter.optimizations = [tf.lite.Optimize.DEFAULT]
                 tflite_model = converter.convert()
 
@@ -1299,48 +1131,365 @@ class ConsoleTraining:
                 with open(tflite_path, 'wb') as f:
                     f.write(tflite_model)
 
-                print(f"✅ {model_name} exported successfully!")
-                print(f"   TFLite model size: {len(tflite_model) / (1024*1024):.2f} MB")
+                print(f"{model_name} exported successfully!")
+                print(f"TFLite model size: {len(tflite_model) / (1024*1024):.2f} MB")
 
                 interpreter.allocate_tensors()
-                print(f"✅ {model_name} verification passed!")
+                print(f"{model_name} verification passed!")
 
-            print("✅ All TFLite models exported successfully!")
+            fused_keras_path = os.path.join("outputs/models", "knift_gpu_fused_model.h5")
+            fused_model.save(fused_keras_path)
+            print(f"Fused Keras model saved to: {fused_keras_path}")
+
+            print("All original and fused TFLite models exported successfully!")
 
         except Exception as e:
-            print(f"❌ Error during TFLite export: {str(e)}")
+            print(f"Error during TFLite export: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
-# === MAIN ENTRY POINT ===
+    def _fuse_batch_norms(self):
+        print("Starting BatchNorm fusion process...")
+
+        fused_weights = {}
+
+        i = 0
+        original_layers = self.train_model.layers
+        while i < len(original_layers):
+            current_layer = original_layers[i]
+
+            if (isinstance(current_layer, tf.keras.layers.Conv2D) and
+                i + 1 < len(original_layers) and
+                isinstance(original_layers[i + 1], tf.keras.layers.BatchNormalization)):
+
+                conv_weights = current_layer.get_weights()
+                bn_weights = original_layers[i + 1].get_weights()
+
+                conv_kernel = conv_weights[0]
+                conv_bias = conv_weights[1] if len(conv_weights) > 1 else np.zeros(conv_kernel.shape[-1])
+
+                gamma = bn_weights[0]
+                beta = bn_weights[1]
+                moving_mean = bn_weights[2]
+                moving_var = bn_weights[3]
+                epsilon = original_layers[i + 1].epsilon
+
+                std = np.sqrt(moving_var + epsilon)
+                w_fused = conv_kernel * (gamma / std).reshape([1, 1, 1, -1])
+                b_fused = beta + (conv_bias - moving_mean) * gamma / std
+
+                fused_weights[current_layer.name] = (w_fused, b_fused)
+                print(f"Fused: {current_layer.name} + {original_layers[i + 1].name}")
+                i += 2
+            else:
+                if hasattr(current_layer, 'get_weights') and len(current_layer.get_weights()) > 0:
+                    fused_weights[current_layer.name] = current_layer.get_weights()
+                i += 1
+
+        inputs = tf.keras.Input(shape=self.train_model.input_shape[1:])
+        x = inputs
+
+        stem_conv_layer = tf.keras.layers.Conv2D(
+            filters=16,
+            kernel_size=3,
+            strides=1,
+            padding='same',
+            activation='relu',
+            name='stem_conv'
+        )
+        x = stem_conv_layer(inputs)
+
+        if 'stem_conv' in fused_weights:
+            stem_conv_layer.set_weights([fused_weights['stem_conv'][0], fused_weights['stem_conv'][1]])
+
+        x = tf.keras.layers.MaxPooling2D(pool_size=2, strides=2, name='stem_pool')(x)
+
+        x = self._create_fused_inception_module(x, 'inception1', fused_weights)
+
+        x = tf.keras.layers.MaxPooling2D(pool_size=2, strides=2, name='pool2')(x)
+
+        x = self._create_fused_inception_module(x, 'inception2', fused_weights)
+
+        x = tf.keras.layers.MaxPooling2D(pool_size=2, strides=2, name='pool3')(x)
+
+        x = self._create_fused_inception_module(x, 'inception3', fused_weights)
+
+        x = self._create_fused_inception_module(x, 'inception4', fused_weights)
+
+        x = tf.keras.layers.MaxPooling2D(pool_size=2, strides=2, name='pool4')(x)
+
+        x = self._create_fused_inception_module(x, 'inception5', fused_weights)
+
+        # Use pool_size that matches the actual spatial dimensions at this point: (2, 2) after pool4 layer
+        x = tf.keras.layers.AveragePooling2D(pool_size=(2, 2), strides=(1, 1),
+                                             padding="valid", name="globalpool_pool")(x)
+
+        # Replace FC with 1x1 CONV_2D followed by reshape for better GPU compatibility
+        x = tf.keras.layers.Conv2D(
+            filters=40,
+            kernel_size=1,
+            strides=1,
+            padding='valid',
+            activation=None,
+            name='embedding_conv'
+        )(x)
+
+        # Reshape from (batch, 1, 1, 40) to (batch, 40)
+        x = tf.keras.layers.Reshape((40,), name='embedding_reshape')(x)
+        outputs = x
+
+        fused_model = tf.keras.Model(inputs=inputs, outputs=outputs, name="knift_gpu_fused")
+
+        if 'embedding_conv' in fused_weights:
+            for layer in fused_model.layers:
+                if layer.name == 'embedding_conv':
+                    try:
+                        layer.set_weights(fused_weights['embedding_conv'])
+                    except:
+                        pass
+
+        print(f"Fused model created with {len(fused_model.layers)} layers")
+        return fused_model
+
+    def _create_fused_inception_module(self, x, block_name, fused_weights):
+        configs = {
+            'inception1': {'b1': 12, 'b2_r': 8, 'b2': 16, 'b3_r': 8, 'b3': 16, 'b4': 8},
+            'inception2': {'b1': 16, 'b2_r': 12, 'b2': 24, 'b3_r': 12, 'b3': 24, 'b4': 16},
+            'inception3': {'b1': 24, 'b2_r': 16, 'b2': 32, 'b3_r': 16, 'b3': 32, 'b4': 24},
+            'inception4': {'b1': 28, 'b2_r': 16, 'b2': 32, 'b3_r': 16, 'b3': 32, 'b4': 24},
+            'inception5': {'b1': 28, 'b2_r': 14, 'b2': 28, 'b3_r': 14, 'b3': 28, 'b4': 24}
+        }
+
+        config = configs[block_name]
+
+        b1_name = f'{block_name}_b1_1x1'
+        b1_layer = tf.keras.layers.Conv2D(
+            filters=config['b1'], kernel_size=1, padding='same',
+            activation='relu', name=b1_name
+        )
+        branch1 = b1_layer(x)
+
+        if b1_name in fused_weights:
+            b1_layer.set_weights([fused_weights[b1_name][0], fused_weights[b1_name][1]])
+
+        b2_1_name = f'{block_name}_b2_1x1'
+        b2_1_layer = tf.keras.layers.Conv2D(
+            filters=config['b2_r'], kernel_size=1, padding='same',
+            activation='relu', name=b2_1_name
+        )
+        temp = b2_1_layer(x)
+        if b2_1_name in fused_weights:
+            b2_1_layer.set_weights([fused_weights[b2_1_name][0], fused_weights[b2_1_name][1]])
+
+        b2_2_name = f'{block_name}_b2_3x3'
+        b2_2_layer = tf.keras.layers.Conv2D(
+            filters=config['b2'], kernel_size=3, padding='same',
+            activation='relu', name=b2_2_name
+        )
+        branch2 = b2_2_layer(temp)
+        if b2_2_name in fused_weights:
+            b2_2_layer.set_weights([fused_weights[b2_2_name][0], fused_weights[b2_2_name][1]])
+
+        b3_1_name = f'{block_name}_b3_1x1'
+        b3_1_layer = tf.keras.layers.Conv2D(
+            filters=config['b3_r'], kernel_size=1, padding='same',
+            activation='relu', name=b3_1_name
+        )
+        temp = b3_1_layer(x)
+        if b3_1_name in fused_weights:
+            b3_1_layer.set_weights([fused_weights[b3_1_name][0], fused_weights[b3_1_name][1]])
+
+        b3_2_name = f'{block_name}_b3_5x5'
+        b3_2_layer = tf.keras.layers.Conv2D(
+            filters=config['b3'], kernel_size=5, padding='same',
+            activation='relu', name=b3_2_name
+        )
+        branch3 = b3_2_layer(temp)
+        if b3_2_name in fused_weights:
+            b3_2_layer.set_weights([fused_weights[b3_2_name][0], fused_weights[b3_2_name][1]])
+
+        branch4_pool = tf.keras.layers.MaxPooling2D(
+            pool_size=3, strides=1, padding='same', name=f'{block_name}_b4_pool'
+        )(x)
+
+        b4_1_name = f'{block_name}_b4_1x1'
+        b4_1_layer = tf.keras.layers.Conv2D(
+            filters=config['b4'], kernel_size=1, padding='same',
+            activation='relu', name=b4_1_name
+        )
+        branch4 = b4_1_layer(branch4_pool)
+        if b4_1_name in fused_weights:
+            b4_1_layer.set_weights([fused_weights[b4_1_name][0], fused_weights[b4_1_name][1]])
+
+        concatenated = tf.keras.layers.Concatenate(name=f'{block_name}_concat')([
+            branch1, branch2, branch3, branch4
+        ])
+
+        return concatenated
+
+    def _create_fused_model_with_batch_size(self, original_fused_model, batch_size):
+        """
+        Creates a new model with the same architecture as original_fused_model but with specified batch size.
+        This ensures the exported model is truly BN-free without any disconnected BN layers.
+        """
+        # Extract the architecture from the original fused model by recreating it with the batch size
+        inputs = tf.keras.Input(shape=original_fused_model.input_shape[1:], batch_size=batch_size, name="input")
+        x = inputs
+
+        # Recreate the exact same architecture as in _fuse_batch_norms but with batch size
+        # Stem: Conv2D -> MaxPooling2D
+        x = tf.keras.layers.Conv2D(
+            filters=16,
+            kernel_size=3,
+            strides=1,
+            padding='same',
+            activation='relu',
+            name='stem_conv'
+        )(x)
+        x = tf.keras.layers.MaxPooling2D(pool_size=2, strides=2, name='stem_pool')(x)
+
+        # Inception blocks
+        x = self._create_fused_inception_block_batch_only(x, 'inception1')
+
+        x = tf.keras.layers.MaxPooling2D(pool_size=2, strides=2, name='pool2')(x)
+
+        x = self._create_fused_inception_block_batch_only(x, 'inception2')
+
+        x = tf.keras.layers.MaxPooling2D(pool_size=2, strides=2, name='pool3')(x)
+
+        x = self._create_fused_inception_block_batch_only(x, 'inception3')
+
+        x = self._create_fused_inception_block_batch_only(x, 'inception4')
+
+        x = tf.keras.layers.MaxPooling2D(pool_size=2, strides=2, name='pool4')(x)
+
+        x = self._create_fused_inception_block_batch_only(x, 'inception5')
+
+        # Global pooling and 1x1 conv layer
+        x = tf.keras.layers.AveragePooling2D(pool_size=(2, 2), strides=(1, 1),
+                                             padding="valid", name="globalpool_pool")(x)
+
+        # Replace FC with 1x1 CONV_2D followed by reshape for better GPU compatibility
+        x = tf.keras.layers.Conv2D(
+            filters=40,
+            kernel_size=1,
+            strides=1,
+            padding='valid',
+            activation=None,
+            name='embedding_conv'
+        )(x)
+
+        # Reshape from (batch, 1, 1, 40) to (batch, 40)
+        x = tf.keras.layers.Reshape((40,), name='embedding_reshape')(x)
+        outputs = x
+
+        batch_model = tf.keras.Model(inputs=inputs, outputs=outputs, name=f"knift_gpu_fused_batch_{batch_size}")
+
+        # Now copy the weights from the original fused model
+        self._copy_fused_weights_to_batch_model(original_fused_model, batch_model)
+
+        return batch_model
+
+    def _create_fused_inception_block_batch_only(self, x, block_name):
+        """
+        Creates a fused inception block without BatchNormalization layers.
+        """
+        configs = {
+            'inception1': {'b1': 12, 'b2_r': 8, 'b2': 16, 'b3_r': 8, 'b3': 16, 'b4': 8},
+            'inception2': {'b1': 16, 'b2_r': 12, 'b2': 24, 'b3_r': 12, 'b3': 24, 'b4': 16},
+            'inception3': {'b1': 24, 'b2_r': 16, 'b2': 32, 'b3_r': 16, 'b3': 32, 'b4': 24},
+            'inception4': {'b1': 28, 'b2_r': 16, 'b2': 32, 'b3_r': 16, 'b3': 32, 'b4': 24},
+            'inception5': {'b1': 28, 'b2_r': 14, 'b2': 28, 'b3_r': 14, 'b3': 28, 'b4': 24}
+        }
+
+        config = configs[block_name]
+
+        b1_name = f'{block_name}_b1_1x1'
+        branch1 = tf.keras.layers.Conv2D(
+            filters=config['b1'], kernel_size=1, padding='same',
+            activation='relu', name=b1_name
+        )(x)
+
+        b2_1_name = f'{block_name}_b2_1x1'
+        temp = tf.keras.layers.Conv2D(
+            filters=config['b2_r'], kernel_size=1, padding='same',
+            activation='relu', name=b2_1_name
+        )(x)
+
+        b2_2_name = f'{block_name}_b2_3x3'
+        branch2 = tf.keras.layers.Conv2D(
+            filters=config['b2'], kernel_size=3, padding='same',
+            activation='relu', name=b2_2_name
+        )(temp)
+
+        b3_1_name = f'{block_name}_b3_1x1'
+        temp = tf.keras.layers.Conv2D(
+            filters=config['b3_r'], kernel_size=1, padding='same',
+            activation='relu', name=b3_1_name
+        )(x)
+
+        b3_2_name = f'{block_name}_b3_5x5'
+        branch3 = tf.keras.layers.Conv2D(
+            filters=config['b3'], kernel_size=5, padding='same',
+            activation='relu', name=b3_2_name
+        )(temp)
+
+        branch4_pool = tf.keras.layers.MaxPooling2D(
+            pool_size=3, strides=1, padding='same', name=f'{block_name}_b4_pool'
+        )(x)
+
+        b4_1_name = f'{block_name}_b4_1x1'
+        branch4 = tf.keras.layers.Conv2D(
+            filters=config['b4'], kernel_size=1, padding='same',
+            activation='relu', name=b4_1_name
+        )(branch4_pool)
+
+        concatenated = tf.keras.layers.Concatenate(name=f'{block_name}_concat')(
+            [branch1, branch2, branch3, branch4]
+        )
+
+        return concatenated
+
+    def _copy_fused_weights_to_batch_model(self, fused_model, batch_model):
+        fused_weights_map = {}
+        for layer in fused_model.layers:
+            if hasattr(layer, 'get_weights') and len(layer.get_weights()) > 0:
+                fused_weights_map[layer.name] = layer.get_weights()
+
+        for layer in batch_model.layers:
+            if hasattr(layer, 'get_weights') and len(layer.get_weights()) > 0:
+                if layer.name in fused_weights_map:
+                    try:
+                        layer.set_weights(fused_weights_map[layer.name])
+                        print(f"Applied fused weights to: {layer.name}")
+                    except Exception as e:
+                        print(f"Could not apply fused weights to {layer.name}: {e}")
+
 
 def main():
-    """Main entry point - KNIFT-GPU training"""
     print("=" * 60)
-    print("🚀 KNIFT-GPU - Mobile-Optimized Feature Descriptor Training")
+    print("KNIFT-GPU - Mobile-Optimized Feature Descriptor Training")
     print("=" * 60)
 
-    # Configuration
     training_dir = "Set14"
     validation_dir = "Set14"
-    epochs = 250
-    batch_size = 32
-    steps_per_epoch = 20  # 500k patches ≈ 480k (250 epochs × 20 steps × 32 batch × 3 triplets)
+    epochs = 100
+    batch_size = 64
+    steps_per_epoch = 20
 
-    # Setup environment
     setup_environment(training_dir)
 
-    # Print configuration
-    print(f"\n📊 Training Configuration:")
-    print(f"   Training images: {training_dir} (13 images excluding baboon)")
-    print(f"   Validation image: baboon.jpeg from Set14")
-    print(f"   Epochs: {epochs}")
-    print(f"   Batch size: {batch_size}")
-    print(f"   Steps per epoch: {steps_per_epoch}")
-    print(f"   Total patches: ~{epochs * steps_per_epoch * batch_size * 3:,}")
-    print(f"   Models exported: knift_gpu_float.tflite, knift_gpu_float_400.tflite, knift_gpu_float_1k.tflite")
+    print(f"\nTraining Configuration:")
+    print(f"Training images: {training_dir} (13 images excluding baboon)")
+    print(f"Validation image: baboon.jpeg from Set14")
+    print(f"Epochs: {epochs}")
+    print(f"Batch size: {batch_size}")
+    print(f"Steps per epoch: {steps_per_epoch}")
+    print(f"Total patches: ~{epochs * steps_per_epoch * batch_size * 3:,}")
+    print(f"Models exported: knift_gpu_fused_float.tflite, knift_gpu_fused_float_400.tflite, knift_gpu_fused_float_1k.tflite")
 
-    print(f"\n🏃 Starting training...")
+    print(f"\nStarting training...")
 
-    # Create and run the console trainer
     trainer = ConsoleTraining(
         training_dir=training_dir,
         validation_dir=validation_dir,
@@ -1351,7 +1500,7 @@ def main():
 
     trainer.run_training()
 
-    print("\n🎉 Training and export completed successfully!")
+    print("\nTraining and export completed successfully!")
 
 if __name__ == "__main__":
     main()

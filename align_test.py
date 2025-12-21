@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
 
-"""
-KNIFT Model Alignment Test Suite v10.0 - Automated Model Evaluation
-
-This script automatically tests the alignment capabilities of the KNIFT model
-by intentionally misaligning Set14 images and then evaluating the model's
-ability to realign them. Provides comprehensive performance metrics and
-success rate analysis for the trained model.
-"""
-
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import cv2
@@ -57,37 +48,30 @@ class KNIFTAlignmentTestSuite:
             'scale_factor': 1.0,
 
             # Fixed algorithm parameters
-            'pyramid_scales': [0.0625, 0.125, 0.25, 0.5, 1.0],  # Coarse to fine: 6.25%, 12.5%, 25%, 50%, 100% - 5 scales, dropping the 2x scale
-            'target_keypoints': 1000,  # Use 1000 keypoints at each scale
+            'pyramid_scales': [0.0625, 0.125, 0.25, 0.5, 1.0],
+            'target_keypoints': 1000,
             'fast_initial_threshold': 50,
             'fast_min_threshold': 5,
             'fast_threshold_step': 5,
             'fast_nonmaxSuppression': True,
 
-            # Adaptive refinement parameters
-            'max_iterations': 1,  # Only 1 iteration per scale now
+            'max_iterations': 1,
         }
 
-        # Create GUI
-        # Multi-scale alignment state
         self.current_scale_index = 0
-        self.scale_homographies = {}  # Store homography for each scale level
-        self.scale_results = {}       # Store results for each scale level
+        self.scale_homographies = {}
+        self.scale_results = {}
 
-        # Add variables for testing and reporting
-        self.test_results = []        # Store results for each test image
-        self.current_test_index = 0   # Index of current test image
-        self.test_images = []         # List of test images to process
+        self.test_results = []
+        self.current_test_index = 0
+        self.test_images = []
 
         self.create_widgets()
 
-        # Try to auto-load the KNIFT model first
         self.auto_load_knift_model()
 
-        # Load all Set14 images for testing
         self.load_test_images()
 
-        # Load the first test image
         if self.test_images:
             self.load_current_test_image()
 
@@ -114,54 +98,41 @@ class KNIFTAlignmentTestSuite:
         progress_label = ttk.Label(progress_frame, textvariable=self.progress_var)
         progress_label.pack(side=tk.LEFT, padx=5)
 
-        # Images and result frame for visualization
         content_frame = ttk.Frame(main_frame)
         content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Left frame for overlay view
         left_frame = ttk.Frame(content_frame)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
 
-        # Overlay images frame
         overlay_frame = ttk.LabelFrame(left_frame, text="Current Alignment Progress")
         overlay_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        # Canvas for overlay view
         self.canvas_overlay = tk.Canvas(overlay_frame, bg='white')
         self.canvas_overlay.pack(fill=tk.BOTH, expand=True)
 
-        # Right frame for visual feedback
         right_frame = ttk.Frame(content_frame)
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
 
-        # Aligned image frame
         aligned_frame = ttk.LabelFrame(right_frame, text="Misaligned vs Realigned Comparison")
         aligned_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        # Canvas for keypoint view
         self.canvas_aligned = tk.Canvas(aligned_frame, bg='white')
         self.canvas_aligned.pack(fill=tk.BOTH, expand=True)
 
-        # Status bar
         self.status_var.set("KNIFT Model Test Suite initialized. Starting automated tests...")
 
-        # Start the automated test suite with a slight delay to allow GUI to initialize
-        self.root.after(2000, self.start_full_test_suite)  # Start after 2 seconds to allow GUI to initialize
+        self.root.after(2000, self.start_full_test_suite)
 
     def create_transformation_controls(self, parent):
-        """Create transformation controls (for synthetic generation) - now only used internally"""
-        # This method is retained for internal use but not called in the automated suite
-        # Initialize variables that would normally be controlled by the GUI
         self.rotation_var = tk.DoubleVar(value=self.params['rotation_angle'])
         self.translation_x_var = tk.DoubleVar(value=self.params['translation_x'])
         self.translation_y_var = tk.DoubleVar(value=self.params['translation_y'])
         self.scale_var = tk.DoubleVar(value=self.params['scale_factor'])
 
     def load_test_images(self):
-        """Load all unique images from the Set14 folder (excluding collage) for testing"""
-        set14_paths = ["./Set14", "./Set14/Set14HQ"]  # Check both locations
+        set14_paths = ["./Set14", "./Set14/Set14HQ"]
         self.test_images = []
-        seen_files = set()  # To avoid duplicate images
+        seen_files = set()
 
         for set14_path in set14_paths:
             if os.path.exists(set14_path):
@@ -242,7 +213,7 @@ class KNIFTAlignmentTestSuite:
 
     def auto_load_knift_model(self):
         """Automatically load the specific KNIFT model for GPU float 1k"""
-        model_path = "./outputs/models/knift_gpu_float_1k.tflite"
+        model_path = "./outputs/models/knift_gpu_fused_float_1k.tflite"
 
         if os.path.exists(model_path):
             try:
@@ -330,16 +301,13 @@ class KNIFTAlignmentTestSuite:
         self.root.after(100, self.run_next_scale)
 
     def process_next_test_image(self):
-        """Process the next image in the test suite"""
         if not self.is_aligning:
             return
 
         if self.current_test_index >= len(self.test_images):
-            # All images have been processed, show final report
             self.finalize_test_suite()
             return
 
-        # Reset alignment state for this image - ensure clean slate
         self.current_scale_index = 0
         self.scale_homographies = {}
         self.scale_results = {}
@@ -351,33 +319,25 @@ class KNIFTAlignmentTestSuite:
         self.desc1 = None
         self.desc2 = None
 
-        # Clear the display canvases before loading the new image
         self.canvas_overlay.delete("all")
         self.canvas_aligned.delete("all")
 
-        # Use root.after to ensure proper separation between resets and loading
         self.root.after(50, self._load_and_process_current_image)
 
     def _load_and_process_current_image(self):
-        """Helper method to load and process the current image after reset"""
-        # Load the next test image
         success = self.load_current_test_image()
 
         if not success:
-            # If loading failed, move to next or finish
             if self.current_test_index < len(self.test_images):
-                self.root.after(1000, self.process_next_test_image)  # Skip this image and try the next
+                self.root.after(1000, self.process_next_test_image)
             else:
                 self.finalize_test_suite()
             return
 
-        # Set random transformation parameters for this test
         self.set_random_transformation_params()
 
-        # Update status
         self.status_var.set(f"Testing image {self.current_test_index + 1}/{len(self.test_images)}: {os.path.basename(self.test_images[self.current_test_index])}")
 
-        # Start alignment for this image
         self.root.after(100, self.run_next_scale)
 
     def set_random_transformation_params(self):
@@ -1175,7 +1135,6 @@ class KNIFTAlignmentTestSuite:
             y_pos = (canvas_height - display_height) // 2
             self.canvas_aligned.create_image(x_pos, y_pos, anchor=tk.NW, image=self.combined_tk)
 
-            # Draw keypoints
             if self.keypoints_1 is not None and len(self.keypoints_1) > 0:
                 scale_x = display_width / combined_pil.width
                 scale_y = display_height / combined_pil.height
@@ -1198,7 +1157,7 @@ class KNIFTAlignmentTestSuite:
                     for pt in transformed_pts:
                         x = int((pt[0] + w1) * scale_x) + x_pos
                         y = int(pt[1] * scale_y) + y_pos
-                        self.canvas_aligned.create_oval(x-1, y-1, x+1, y+1, 
+                        self.canvas_aligned.create_oval(x-1, y-1, x+1, y+1,
                                                        fill='', outline='red', width=1)
 
 def main():
