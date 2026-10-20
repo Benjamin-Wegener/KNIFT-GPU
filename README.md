@@ -54,6 +54,12 @@ Lightweight Inception-based CNN (~100K parameters):
 
 ## Usage
 
+```bash
+pip install -r requirements.txt
+```
+
+(Tkinter ships with most Python installers; on Debian/Ubuntu install `python3-tk`.)
+
 ### Training
 ```bash
 python main.py
